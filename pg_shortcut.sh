@@ -3,6 +3,21 @@
 
 set -euo pipefail
 
+# ── Dependency check ───────────────────────────────────────────────────────
+check_deps() {
+    local missing=()
+    command -v whiptail  >/dev/null 2>&1 || missing+=("whiptail (Linux: apt install whiptail / macOS: brew install newt)")
+    command -v pg_dump   >/dev/null 2>&1 || missing+=("pg_dump (brew install postgresql / apt install postgresql-client)")
+    command -v pg_restore >/dev/null 2>&1 || missing+=("pg_restore (brew install postgresql / apt install postgresql-client)")
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "pg_shortcut: missing required tools:" >&2
+        for dep in "${missing[@]}"; do
+            echo "  • $dep" >&2
+        done
+        exit 1
+    fi
+}
+
 # ── Constants ──────────────────────────────────────────────────────────────
 readonly CONFIG_DIR="$HOME/.pg_shortcut"
 readonly DUMPS_DIR="$CONFIG_DIR/dumps"
@@ -214,7 +229,7 @@ do_restore() {
     local dump_files=()
     while IFS= read -r -d '' f; do
         dump_files+=("$(basename "$f")" "")
-    done < <(find "$DUMPS_DIR" -maxdepth 1 -name "*.dump" -print0 2>/dev/null | sort -z)
+    done < <(find "$DUMPS_DIR" -maxdepth 1 -name "*.dump" 2>/dev/null | sort)
 
     if [[ ${#dump_files[@]} -eq 0 ]]; then
         whiptail --title "No Dump Files" \
@@ -282,5 +297,6 @@ main_menu() {
 }
 
 # ── Entry point ────────────────────────────────────────────────────────────
+check_deps
 init_dirs
 main_menu
