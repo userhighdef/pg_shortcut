@@ -24,6 +24,7 @@ readonly CONFIG_DIR="$HOME/.pg_shortcut"
 readonly DUMPS_DIR="$CONFIG_DIR/dumps"
 readonly URLS_FILE="$CONFIG_DIR/urls"
 readonly PGPASS_FILE="$HOME/.pgpass"
+readonly LOG_FILE="$CONFIG_DIR/pg_shortcut.log"
 
 # ── Global state ───────────────────────────────────────────────────────────
 URL_LABELS=()
@@ -36,8 +37,15 @@ PG_HOST="" PG_PORT="" PG_DB="" PG_USER="" PG_PASS=""
 init_dirs() {
     mkdir -p "$DUMPS_DIR"
     chmod 700 "$CONFIG_DIR"
-    touch "$URLS_FILE" "$PGPASS_FILE"
-    chmod 600 "$URLS_FILE" "$PGPASS_FILE"
+    touch "$URLS_FILE" "$PGPASS_FILE" "$LOG_FILE"
+    chmod 600 "$URLS_FILE" "$PGPASS_FILE" "$LOG_FILE"
+}
+
+# ── log_cmd ────────────────────────────────────────────────────────────────
+# Usage: log_cmd <status> <command...>
+log_cmd() {
+    local status="$1"; shift
+    printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$status" "$*" >> "$LOG_FILE"
 }
 
 # ── parse_url ──────────────────────────────────────────────────────────────
@@ -198,6 +206,7 @@ do_dump() {
     whiptail --title "Working" --infobox "Dumping database, please wait..." 6 50
 
     local err_output ret
+    log_cmd "RUN" "pg_dump -U $PG_USER -h $PG_HOST -p $PG_PORT -d $PG_DB -v -Fc -f $DUMPS_DIR/$filename"
     err_output=$(pg_dump \
         -U "$PG_USER" \
         -h "$PG_HOST" \
@@ -209,10 +218,12 @@ do_dump() {
         2>&1) && ret=0 || ret=$?
 
     if [[ $ret -eq 0 ]]; then
+        log_cmd "OK " "pg_dump exit 0 → $DUMPS_DIR/$filename"
         whiptail --title "Success" \
             --scrolltext \
             --msgbox "Dump saved to:\n$DUMPS_DIR/$filename\n\n$err_output" 30 80
     else
+        log_cmd "ERR" "pg_dump exit $ret"
         local display_err
         display_err=$(echo "$err_output" | head -5)
         whiptail --title "Error" \
@@ -253,6 +264,7 @@ do_restore() {
     whiptail --title "Working" --infobox "Restoring database, please wait..." 6 50
 
     local err_output ret
+    log_cmd "RUN" "pg_restore -U $PG_USER -h $PG_HOST -p $PG_PORT -d $PG_DB --clean --if-exists $DUMPS_DIR/$selected_dump"
     err_output=$(pg_restore \
         -U "$PG_USER" \
         -h "$PG_HOST" \
@@ -264,9 +276,11 @@ do_restore() {
         2>&1) && ret=0 || ret=$?
 
     if [[ $ret -eq 0 ]]; then
+        log_cmd "OK " "pg_restore exit 0 → $PG_DB @ $PG_HOST"
         whiptail --title "Success" \
             --msgbox "Restore completed successfully." 8 50
     else
+        log_cmd "ERR" "pg_restore exit $ret"
         local display_err
         display_err=$(echo "$err_output" | head -5)
         whiptail --title "Error" \
@@ -287,6 +301,7 @@ do_clean_db() {
     whiptail --title "Working" --infobox "Cleaning database, please wait..." 6 50
 
     local err_output ret
+    log_cmd "RUN" "psql -U $PG_USER -h $PG_HOST -p $PG_PORT -d $PG_DB -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'"
     err_output=$(psql \
         -U "$PG_USER" \
         -h "$PG_HOST" \
@@ -296,9 +311,11 @@ do_clean_db() {
         2>&1) && ret=0 || ret=$?
 
     if [[ $ret -eq 0 ]]; then
+        log_cmd "OK " "psql clean exit 0 → $PG_DB @ $PG_HOST"
         whiptail --title "Success" \
             --msgbox "Database '$PG_DB' cleaned successfully.\nPublic schema dropped and recreated." 8 60
     else
+        log_cmd "ERR" "psql clean exit $ret"
         local display_err
         display_err=$(echo "$err_output" | head -5)
         whiptail --title "Error" \
