@@ -142,7 +142,10 @@ make_dump_filename() {
     local prefix="$1" suffix="$2" host="$3" db="$4"
     local ts
     ts=$(date '+%Y%m%d%H%M')
-    echo "${prefix}${host}:${db}:${ts}${suffix}.dump"
+    local name="${host}:${db}:${ts}"
+    [[ -n "$prefix" ]] && name="${prefix}:${name}"
+    [[ -n "$suffix" ]] && name="${name}:${suffix}"
+    echo "${name}.dump"
 }
 
 # ── do_add_url ─────────────────────────────────────────────────────────────
@@ -239,7 +242,7 @@ do_restore() {
 
     # Build dump file list
     local dump_files=()
-    while IFS= read -r -d '' f; do
+    while IFS= read -r f; do
         dump_files+=("$(basename "$f")" "")
     done < <(find "$DUMPS_DIR" -maxdepth 1 -name "*.dump" 2>/dev/null | sort)
 
