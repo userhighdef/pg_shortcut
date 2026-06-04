@@ -6,9 +6,10 @@ set -euo pipefail
 # ── Dependency check ───────────────────────────────────────────────────────
 check_deps() {
     local missing=()
-    command -v whiptail  >/dev/null 2>&1 || missing+=("whiptail (Linux: apt install whiptail / macOS: brew install newt)")
-    command -v pg_dump   >/dev/null 2>&1 || missing+=("pg_dump (brew install postgresql / apt install postgresql-client)")
+    command -v whiptail   >/dev/null 2>&1 || missing+=("whiptail (Linux: apt install whiptail / macOS: brew install newt)")
+    command -v pg_dump    >/dev/null 2>&1 || missing+=("pg_dump (brew install postgresql / apt install postgresql-client)")
     command -v pg_restore >/dev/null 2>&1 || missing+=("pg_restore (brew install postgresql / apt install postgresql-client)")
+    command -v psql       >/dev/null 2>&1 || missing+=("psql (brew install postgresql / apt install postgresql-client)")
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo "pg_shortcut: missing required tools:" >&2
         for dep in "${missing[@]}"; do
@@ -273,6 +274,38 @@ do_restore() {
     fi
 }
 
+# ── do_clean_db ────────────────────────────────────────────────────────────
+do_clean_db() {
+    select_url "CLEAN DB — Select Target" || return 0
+    parse_url "$SELECTED_URL"
+
+    whiptail \
+        --title "Confirm Clean" \
+        --yesno "WARNING: This will permanently delete ALL objects in:\n\nDatabase:  $PG_DB @ $PG_HOST\n\nDrops and recreates the public schema.\nAll tables, views, sequences, functions, and types will be lost.\n\nThis cannot be undone. Continue?" \
+        14 74 || return 0
+
+    whiptail --title "Working" --infobox "Cleaning database, please wait..." 6 50
+
+    local err_output ret
+    err_output=$(psql \
+        -U "$PG_USER" \
+        -h "$PG_HOST" \
+        -p "$PG_PORT" \
+        -d "$PG_DB" \
+        -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" \
+        2>&1) && ret=0 || ret=$?
+
+    if [[ $ret -eq 0 ]]; then
+        whiptail --title "Success" \
+            --msgbox "Database '$PG_DB' cleaned successfully.\nPublic schema dropped and recreated." 8 60
+    else
+        local display_err
+        display_err=$(echo "$err_output" | head -5)
+        whiptail --title "Error" \
+            --msgbox "Clean failed (exit $ret):\n\n$display_err" 14 70
+    fi
+}
+
 # ── main_menu ──────────────────────────────────────────────────────────────
 main_menu() {
     while true; do
@@ -280,18 +313,20 @@ main_menu() {
         choice=$(whiptail \
             --title "pg_shortcut" \
             --backtitle "PostgreSQL Dump & Restore" \
-            --menu "Select operation:" 15 60 4 \
-            "1" "PG_DUMP  — export a database" \
+            --menu "Select operation:" 16 60 5 \
+            "1" "PG_DUMP    — export a database" \
             "2" "PG_RESTORE — import a database" \
-            "3" "Add PostgreSQL URL" \
-            "4" "Exit" \
+            "3" "CLEAN DB   — drop all objects in a database" \
+            "4" "Add PostgreSQL URL" \
+            "5" "Exit" \
             3>&1 1>&2 2>&3) || exit 0
 
         case "$choice" in
             1) do_dump ;;
             2) do_restore ;;
-            3) do_add_url ;;
-            4) exit 0 ;;
+            3) do_clean_db ;;
+            4) do_add_url ;;
+            5) exit 0 ;;
         esac
     done
 }
