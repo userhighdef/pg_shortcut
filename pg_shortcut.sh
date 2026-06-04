@@ -183,17 +183,19 @@ do_dump() {
 
     local err_output ret
     err_output=$(pg_dump \
-        -Fc \
+        -U "$PG_USER" \
         -h "$PG_HOST" \
         -p "$PG_PORT" \
-        -U "$PG_USER" \
         -d "$PG_DB" \
+        -v \
+        -F "c" \
         -f "$DUMPS_DIR/$filename" \
         2>&1) && ret=0 || ret=$?
 
     if [[ $ret -eq 0 ]]; then
         whiptail --title "Success" \
-            --msgbox "Dump saved to:\n$DUMPS_DIR/$filename" 8 70
+            --scrolltext \
+            --msgbox "Dump saved to:\n$DUMPS_DIR/$filename\n\n$err_output" 30 80
     else
         local display_err
         display_err=$(echo "$err_output" | head -5)
@@ -236,12 +238,12 @@ do_restore() {
 
     local err_output ret
     err_output=$(pg_restore \
-        --clean \
-        --if-exists \
+        -U "$PG_USER" \
         -h "$PG_HOST" \
         -p "$PG_PORT" \
-        -U "$PG_USER" \
         -d "$PG_DB" \
+        --clean \
+        --if-exists \
         "$DUMPS_DIR/$selected_dump" \
         2>&1) && ret=0 || ret=$?
 
