@@ -29,8 +29,10 @@ readonly LOG_FILE="$CONFIG_DIR/pg_shortcut.log"
 # ── Global state ───────────────────────────────────────────────────────────
 URL_LABELS=()
 URL_VALUES=()
+URL_ACTIONS=()
 SELECTED_URL=""
 SELECTED_LABEL=""
+SELECTED_ACTIONS=""
 PG_HOST="" PG_PORT="" PG_DB="" PG_USER="" PG_PASS=""
 
 # ── init_dirs ──────────────────────────────────────────────────────────────
@@ -83,58 +85,113 @@ save_to_pgpass() {
     chmod 600 "$PGPASS_FILE"
 }
 
+# ── remove_from_pgpass ─────────────────────────────────────────────────────
+remove_from_pgpass() {
+    local host="$1" port="$2" db="$3" user="$4"
+    local tmp
+    tmp=$(grep -v "^${host}:${port}:${db}:${user}:" "$PGPASS_FILE" 2>/dev/null || true)
+    echo "$tmp" > "$PGPASS_FILE"
+    chmod 600 "$PGPASS_FILE"
+}
+
 # ── load_urls ──────────────────────────────────────────────────────────────
-# Populates URL_LABELS and URL_VALUES arrays from URLS_FILE
+# File format: label<TAB>url<TAB>actions  (actions = comma-separated; empty = none)
+# Existing two-field entries get empty actions (no actions allowed).
 load_urls() {
     URL_LABELS=()
     URL_VALUES=()
-    while IFS=$'\t' read -r label url; do
+    URL_ACTIONS=()
+    while IFS=$'\t' read -r label url actions; do
         [[ -z "$label" ]] && continue
         URL_LABELS+=("$label")
         URL_VALUES+=("$url")
+        URL_ACTIONS+=("${actions:-}")
     done < "$URLS_FILE"
 }
 
 # ── save_url ───────────────────────────────────────────────────────────────
 save_url() {
-    local label="$1" url="$2"
+    local label="$1" url="$2" actions="${3:-}"
     # Remove existing entry with same label (dedup)
     local tmp
     tmp=$(grep -v $'^'"${label}"$'\t' "$URLS_FILE" 2>/dev/null || true)
     echo "$tmp" > "$URLS_FILE"
-    printf '%s\t%s\n' "$label" "$url" >> "$URLS_FILE"
+    printf '%s\t%s\t%s\n' "$label" "$url" "$actions" >> "$URLS_FILE"
     chmod 600 "$URLS_FILE"
 }
 
+# ── pick_actions_checklist ─────────────────────────────────────────────────
+# Shows checklist for allowed actions. Echos comma-separated result to stdout.
+# Returns 1 if user cancels (caller should treat as "keep current" or "none").
+pick_actions_checklist() {
+    local current="${1:-}"
+    local dump_state="OFF" restore_state="OFF" clean_state="OFF"
+    [[ "$current" == *"dump"* ]]    && dump_state="ON"
+    [[ "$current" == *"restore"* ]] && restore_state="ON"
+    [[ "$current" == *"clean"* ]]   && clean_state="ON"
+
+    local sel
+    # --separate-output: one tag per line, no quoting — safe to join with commas
+    sel=$(whiptail \
+        --title "Allowed Actions" \
+        --checklist "Select allowed actions for this connection:\n(Space to toggle, Enter to confirm)" \
+        13 64 3 \
+        "dump"    "Export database (pg_dump)"    "$dump_state" \
+        "restore" "Import database (pg_restore)" "$restore_state" \
+        "clean"   "Drop all objects (CLEAN DB)"  "$clean_state" \
+        --separate-output \
+        3>&1 1>&2 2>&3) || return 1
+
+    # Join newline-separated items into a comma-separated string
+    echo "$sel" | tr '\n' ',' | sed 's/,$//'
+}
+
 # ── select_url ─────────────────────────────────────────────────────────────
-# Presents URL selection menu. Sets SELECTED_URL and SELECTED_LABEL.
-# Returns 1 on cancel or empty list.
+# Presents URL selection menu. Sets SELECTED_URL, SELECTED_LABEL, SELECTED_ACTIONS.
+# Optional second arg: required_action — only shows connections that allow it.
+# Returns 1 on cancel or no eligible connections.
 select_url() {
-    local title="$1"
+    local title="$1" required_action="${2:-}"
     load_urls
-    if [[ ${#URL_VALUES[@]} -eq 0 ]]; then
-        whiptail --title "No Connections" \
-            --msgbox "No saved connections.\nUse 'Add PostgreSQL URL' first." 8 60
-        return 1
-    fi
 
     local menu_args=()
+    local valid_indices=()
     local i=1
-    for label in "${URL_LABELS[@]}"; do
-        menu_args+=("$i" "$label")
-        ((i++))
+    local j
+    for (( j=0; j<${#URL_LABELS[@]}; j++ )); do
+        local acts="${URL_ACTIONS[$j]}"
+        if [[ -n "$required_action" && "$acts" != *"$required_action"* ]]; then
+            continue
+        fi
+        local acts_display="${acts:-none}"
+        menu_args+=("$i" "${URL_LABELS[$j]}  [${acts_display}]")
+        valid_indices+=("$j")
+        (( i++ )) || true
     done
+
+    if [[ ${#menu_args[@]} -eq 0 ]]; then
+        if [[ -n "$required_action" && ${#URL_VALUES[@]} -gt 0 ]]; then
+            whiptail --title "No Allowed Connections" \
+                --msgbox "No connections allow the '$required_action' action.\nUse Manage Connections to configure allowed actions." 8 68
+        else
+            whiptail --title "No Connections" \
+                --msgbox "No saved connections.\nUse Manage Connections > Add new connection." 8 60
+        fi
+        return 1
+    fi
 
     local sel
     sel=$(whiptail \
         --title "$title" \
-        --menu "Choose a saved connection:" 20 70 10 \
+        --menu "Choose a saved connection:" 20 76 10 \
         "${menu_args[@]}" \
         3>&1 1>&2 2>&3) || return 1
 
     local idx=$(( sel - 1 ))
-    SELECTED_URL="${URL_VALUES[$idx]}"
-    SELECTED_LABEL="${URL_LABELS[$idx]}"
+    local real_idx="${valid_indices[$idx]}"
+    SELECTED_URL="${URL_VALUES[$real_idx]}"
+    SELECTED_LABEL="${URL_LABELS[$real_idx]}"
+    SELECTED_ACTIONS="${URL_ACTIONS[$real_idx]}"
 }
 
 # ── make_dump_filename ─────────────────────────────────────────────────────
@@ -176,17 +233,22 @@ do_add_url() {
         return 0
     fi
 
+    # Select allowed actions (cancel keeps empty — no actions allowed)
+    local actions=""
+    actions=$(pick_actions_checklist "") || actions=""
+
     parse_url "$url"
     save_to_pgpass "$PG_HOST" "$PG_PORT" "$PG_DB" "$PG_USER" "$PG_PASS"
-    save_url "$label" "$url"
+    save_url "$label" "$url" "$actions"
 
+    local acts_display="${actions:-none}"
     whiptail --title "Saved" \
-        --msgbox "Connection '$label' saved successfully." 8 60
+        --msgbox "Connection '$label' saved.\nAllowed actions: $acts_display" 8 60
 }
 
 # ── do_dump ────────────────────────────────────────────────────────────────
 do_dump() {
-    select_url "PG_DUMP — Select Source" || return 0
+    select_url "PG_DUMP — Select Source" "dump" || return 0
     parse_url "$SELECTED_URL"
 
     local prefix
@@ -246,7 +308,7 @@ do_dump() {
 
 # ── do_restore ─────────────────────────────────────────────────────────────
 do_restore() {
-    select_url "PG_RESTORE — Select Target" || return 0
+    select_url "PG_RESTORE — Select Target" "restore" || return 0
     parse_url "$SELECTED_URL"
     local target_label="$SELECTED_LABEL"
 
@@ -303,7 +365,7 @@ do_restore() {
 
 # ── do_clean_db ────────────────────────────────────────────────────────────
 do_clean_db() {
-    select_url "CLEAN DB — Select Target" || return 0
+    select_url "CLEAN DB — Select Target" "clean" || return 0
     parse_url "$SELECTED_URL"
 
     whiptail \
@@ -336,6 +398,112 @@ do_clean_db() {
     fi
 }
 
+# ── do_edit_connection_actions ─────────────────────────────────────────────
+do_edit_connection_actions() {
+    load_urls
+    if [[ ${#URL_LABELS[@]} -eq 0 ]]; then
+        whiptail --title "No Connections" --msgbox "No saved connections." 6 50
+        return 0
+    fi
+
+    local menu_args=()
+    local i=1
+    local j
+    for (( j=0; j<${#URL_LABELS[@]}; j++ )); do
+        local acts="${URL_ACTIONS[$j]:-none}"
+        menu_args+=("$i" "${URL_LABELS[$j]}  [${acts}]")
+        (( i++ )) || true
+    done
+
+    local sel
+    sel=$(whiptail \
+        --title "Edit Allowed Actions" \
+        --menu "Select connection to configure:" 20 76 10 \
+        "${menu_args[@]}" \
+        3>&1 1>&2 2>&3) || return 0
+
+    local idx=$(( sel - 1 ))
+    local label="${URL_LABELS[$idx]}"
+    local url="${URL_VALUES[$idx]}"
+    local current_actions="${URL_ACTIONS[$idx]}"
+
+    local new_actions
+    new_actions=$(pick_actions_checklist "$current_actions") || return 0
+
+    save_url "$label" "$url" "$new_actions"
+
+    local acts_display="${new_actions:-none}"
+    whiptail --title "Updated" \
+        --msgbox "Allowed actions for '$label':\n$acts_display" 8 60
+}
+
+# ── do_delete_connection ───────────────────────────────────────────────────
+do_delete_connection() {
+    load_urls
+    if [[ ${#URL_LABELS[@]} -eq 0 ]]; then
+        whiptail --title "No Connections" --msgbox "No saved connections." 6 50
+        return 0
+    fi
+
+    local menu_args=()
+    local i=1
+    for label in "${URL_LABELS[@]}"; do
+        menu_args+=("$i" "$label")
+        (( i++ )) || true
+    done
+
+    local sel
+    sel=$(whiptail \
+        --title "Delete Connection" \
+        --menu "Select connection to delete:" 20 70 10 \
+        "${menu_args[@]}" \
+        3>&1 1>&2 2>&3) || return 0
+
+    local idx=$(( sel - 1 ))
+    local label="${URL_LABELS[$idx]}"
+    local url="${URL_VALUES[$idx]}"
+
+    whiptail \
+        --title "Confirm Delete" \
+        --yesno "Delete connection '$label'?\n\nThis cannot be undone." \
+        8 60 || return 0
+
+    # Remove from urls file
+    local tmp
+    tmp=$(grep -v $'^'"${label}"$'\t' "$URLS_FILE" 2>/dev/null || true)
+    echo "$tmp" > "$URLS_FILE"
+    chmod 600 "$URLS_FILE"
+
+    # Remove credentials from ~/.pgpass
+    parse_url "$url"
+    remove_from_pgpass "$PG_HOST" "$PG_PORT" "$PG_DB" "$PG_USER"
+
+    whiptail --title "Deleted" --msgbox "Connection '$label' deleted." 6 50
+}
+
+# ── do_manage_connections ──────────────────────────────────────────────────
+do_manage_connections() {
+    while true; do
+        local choice
+        choice=$(whiptail \
+            --title "Manage Connections" \
+            --backtitle "PostgreSQL Dump & Restore" \
+            --menu "Select operation:" 14 60 4 \
+            "1" "Add new connection" \
+            "2" "Edit allowed actions" \
+            "3" "Delete connection" \
+            "4" "Back" \
+            3>&1 1>&2 2>&3) || return 0
+
+        case "$choice" in
+            1) do_add_url ;;
+            2) do_edit_connection_actions ;;
+            3) do_delete_connection ;;
+            4) return 0 ;;
+        esac
+    done
+}
+
 # ── main_menu ──────────────────────────────────────────────────────────────
 main_menu() {
     while true; do
@@ -347,7 +515,7 @@ main_menu() {
             "1" "PG_DUMP    — export a database" \
             "2" "PG_RESTORE — import a database" \
             "3" "CLEAN DB   — drop all objects in a database" \
-            "4" "Add PostgreSQL URL" \
+            "4" "Manage Connections" \
             "5" "Exit" \
             3>&1 1>&2 2>&3) || exit 0
 
@@ -355,7 +523,7 @@ main_menu() {
             1) do_dump ;;
             2) do_restore ;;
             3) do_clean_db ;;
-            4) do_add_url ;;
+            4) do_manage_connections ;;
             5) exit 0 ;;
         esac
     done
