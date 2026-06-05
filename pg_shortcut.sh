@@ -112,9 +112,9 @@ load_urls() {
 # ── save_url ───────────────────────────────────────────────────────────────
 save_url() {
     local label="$1" url="$2" actions="${3:-}"
-    # Remove existing entry with same label (dedup)
+    # Use awk for exact field match — grep BRE would misinterpret labels like "[prod]"
     local tmp
-    tmp=$(grep -v $'^'"${label}"$'\t' "$URLS_FILE" 2>/dev/null || true)
+    tmp=$(awk -v lbl="$label" 'BEGIN{FS="\t"} $1 != lbl' "$URLS_FILE" 2>/dev/null || true)
     echo "$tmp" > "$URLS_FILE"
     printf '%s\t%s\t%s\n' "$label" "$url" "$actions" >> "$URLS_FILE"
     chmod 600 "$URLS_FILE"
@@ -468,9 +468,9 @@ do_delete_connection() {
         --yesno "Delete connection '$label'?\n\nThis cannot be undone." \
         8 60 || return 0
 
-    # Remove from urls file
+    # Use awk for exact field match (same reason as save_url)
     local tmp
-    tmp=$(grep -v $'^'"${label}"$'\t' "$URLS_FILE" 2>/dev/null || true)
+    tmp=$(awk -v lbl="$label" 'BEGIN{FS="\t"} $1 != lbl' "$URLS_FILE" 2>/dev/null || true)
     echo "$tmp" > "$URLS_FILE"
     chmod 600 "$URLS_FILE"
 
