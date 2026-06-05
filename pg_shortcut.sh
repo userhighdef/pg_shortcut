@@ -206,11 +206,13 @@ do_dump() {
     local filename
     filename=$(make_dump_filename "$prefix" "$suffix" "$PG_HOST" "$PG_DB")
 
-    whiptail --title "Working" --infobox "Dumping database, please wait..." 6 50
+    local tmpfile ret
+    tmpfile=$(mktemp)
+    trap 'rm -f "$tmpfile"' RETURN
 
-    local err_output ret
     log_cmd "RUN" "pg_dump -U $PG_USER -h $PG_HOST -p $PG_PORT -d $PG_DB -v -Fc -f $DUMPS_DIR/$filename"
-    err_output=$(pg_dump \
+
+    pg_dump \
         -U "$PG_USER" \
         -h "$PG_HOST" \
         -p "$PG_PORT" \
@@ -218,17 +220,25 @@ do_dump() {
         -v \
         -F "c" \
         -f "$DUMPS_DIR/$filename" \
-        2>&1) && ret=0 || ret=$?
+        2>"$tmpfile" &
+    local pg_pid=$!
+
+    whiptail --title "pg_dump — Live Output  (OK to dismiss)" \
+        --tailbox "$tmpfile" 30 80
+
+    if kill -0 "$pg_pid" 2>/dev/null; then
+        whiptail --title "Working" --infobox "Finishing dump, please wait..." 6 50
+    fi
+    wait "$pg_pid" && ret=0 || ret=$?
 
     if [[ $ret -eq 0 ]]; then
         log_cmd "OK " "pg_dump exit 0 → $DUMPS_DIR/$filename"
         whiptail --title "Success" \
-            --scrolltext \
-            --msgbox "Dump saved to:\n$DUMPS_DIR/$filename\n\n$err_output" 30 80
+            --msgbox "Dump saved to:\n$DUMPS_DIR/$filename" 8 70
     else
         log_cmd "ERR" "pg_dump exit $ret"
         local display_err
-        display_err=$(echo "$err_output" | head -5)
+        display_err=$(head -5 "$tmpfile")
         whiptail --title "Error" \
             --msgbox "pg_dump failed (exit $ret):\n\n$display_err" 14 70
     fi
