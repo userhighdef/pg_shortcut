@@ -268,11 +268,13 @@ do_dump() {
     local filename
     filename=$(make_dump_filename "$prefix" "$suffix" "$PG_HOST" "$PG_DB")
 
-    local tmpfile ret
+    local tmpfile ret=0
     tmpfile=$(mktemp)
     trap 'rm -f "$tmpfile"' RETURN
 
     log_cmd "RUN" "pg_dump -U $PG_USER -h $PG_HOST -p $PG_PORT -d $PG_DB -v -Fc -f $DUMPS_DIR/$filename"
+
+    whiptail --title "Working" --infobox "Running pg_dump, please wait..." 6 50
 
     pg_dump \
         -U "$PG_USER" \
@@ -282,16 +284,7 @@ do_dump() {
         -v \
         -F "c" \
         -f "$DUMPS_DIR/$filename" \
-        2>"$tmpfile" &
-    local pg_pid=$!
-
-    whiptail --title "pg_dump — Live Output  (OK to dismiss)" \
-        --tailbox "$tmpfile" 30 80
-
-    if kill -0 "$pg_pid" 2>/dev/null; then
-        whiptail --title "Working" --infobox "Finishing dump, please wait..." 6 50
-    fi
-    wait "$pg_pid" && ret=0 || ret=$?
+        2>"$tmpfile" || ret=$?
 
     if [[ $ret -eq 0 ]]; then
         log_cmd "OK " "pg_dump exit 0 → $DUMPS_DIR/$filename"
