@@ -25,7 +25,7 @@ No build step. No tests. No package manager.
 | File | Purpose |
 |---|---|
 | `urls` | Tab-separated: `label<TAB>url<TAB>actions` |
-| `dumps/` | `.dump` files produced by `pg_dump -Fc` |
+| `dumps/` | `.dump` files produced by `pg_dump -Fc`; named `[prefix:]host:db:YYYY-MM-DD_HH:MM:SS[:suffix].dump` |
 | `pg_shortcut.log` | Timestamped command log |
 | `~/.pgpass` | Written/maintained alongside `urls` |
 
