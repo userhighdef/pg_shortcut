@@ -198,7 +198,7 @@ select_url() {
 make_dump_filename() {
     local prefix="$1" suffix="$2" host="$3" db="$4"
     local ts
-    ts=$(date '+%Y%m%d%H%M')
+    ts=$(date '+%Y-%m-%d_%H:%M:%S')
     local name="${host}:${db}:${ts}"
     [[ -n "$prefix" ]] && name="${prefix}:${name}"
     [[ -n "$suffix" ]] && name="${name}:${suffix}"
