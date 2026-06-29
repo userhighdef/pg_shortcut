@@ -497,6 +497,81 @@ do_manage_connections() {
     done
 }
 
+# ── do_manage_dump_files ───────────────────────────────────────────────────
+do_manage_dump_files() {
+    while true; do
+        local dump_files=()
+        while IFS= read -r f; do
+            dump_files+=("$(basename "$f")" "")
+        done < <(find "$DUMPS_DIR" -maxdepth 1 -name "*.dump" 2>/dev/null | sort)
+
+        if [[ ${#dump_files[@]} -eq 0 ]]; then
+            whiptail --title "No Dump Files" \
+                --msgbox "No .dump files found in:\n$DUMPS_DIR" 8 70
+            return 0
+        fi
+
+        local selected
+        selected=$(whiptail \
+            --title "Manage Dump Files" \
+            --menu "Select a dump file:" 20 80 10 \
+            "${dump_files[@]}" \
+            3>&1 1>&2 2>&3) || return 0
+
+        local action
+        action=$(whiptail \
+            --title "$selected" \
+            --menu "Choose an action:" 12 60 3 \
+            "1" "Rename" \
+            "2" "Delete" \
+            "3" "Cancel" \
+            3>&1 1>&2 2>&3) || continue
+
+        case "$action" in
+            1)
+                local new_name
+                new_name=$(whiptail \
+                    --title "Rename File" \
+                    --inputbox "Enter new filename:" \
+                    8 70 "$selected" \
+                    3>&1 1>&2 2>&3) || continue
+
+                if [[ -z "$new_name" ]]; then
+                    whiptail --title "Error" --msgbox "Filename cannot be empty." 6 50
+                    continue
+                fi
+
+                if [[ "$new_name" == "$selected" ]]; then
+                    continue
+                fi
+
+                if [[ -e "$DUMPS_DIR/$new_name" ]]; then
+                    whiptail --title "Error" \
+                        --msgbox "A file named '$new_name' already exists." 7 60
+                    continue
+                fi
+
+                mv "$DUMPS_DIR/$selected" "$DUMPS_DIR/$new_name"
+                log_cmd "OK " "rename $selected → $new_name"
+                whiptail --title "Renamed" \
+                    --msgbox "'$selected'\nrenamed to\n'$new_name'" 9 70
+                ;;
+            2)
+                whiptail \
+                    --title "Confirm Delete" \
+                    --yesno "Delete '$selected'?\n\nThis cannot be undone." \
+                    8 60 || continue
+
+                rm "$DUMPS_DIR/$selected"
+                log_cmd "OK " "delete $selected"
+                whiptail --title "Deleted" \
+                    --msgbox "'$selected' deleted." 6 60
+                ;;
+            3) continue ;;
+        esac
+    done
+}
+
 # ── main_menu ──────────────────────────────────────────────────────────────
 main_menu() {
     while true; do
@@ -504,12 +579,13 @@ main_menu() {
         choice=$(whiptail \
             --title "pg_shortcut" \
             --backtitle "PostgreSQL Dump & Restore" \
-            --menu "Select operation:" 16 60 5 \
+            --menu "Select operation:" 16 60 6 \
             "1" "PG_DUMP    — export a database" \
             "2" "PG_RESTORE — import a database" \
             "3" "CLEAN DB   — drop all objects in a database" \
             "4" "Manage Connections" \
-            "5" "Exit" \
+            "5" "Manage Dump Files" \
+            "6" "Exit" \
             3>&1 1>&2 2>&3) || exit 0
 
         case "$choice" in
@@ -517,7 +593,8 @@ main_menu() {
             2) do_restore ;;
             3) do_clean_db ;;
             4) do_manage_connections ;;
-            5) exit 0 ;;
+            5) do_manage_dump_files ;;
+            6) exit 0 ;;
         esac
     done
 }
