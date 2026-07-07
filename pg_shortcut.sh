@@ -196,10 +196,10 @@ select_url() {
 
 # ── make_dump_filename ─────────────────────────────────────────────────────
 make_dump_filename() {
-    local prefix="$1" suffix="$2" host="$3" db="$4"
+    local prefix="$1" suffix="$2" label="$3"
     local ts
     ts=$(date '+%Y-%m-%d_%H:%M:%S')
-    local name="${host}:${db}:${ts}"
+    local name="${label// /_}:${ts}"
     [[ -n "$prefix" ]] && name="${prefix}:${name}"
     [[ -n "$suffix" ]] && name="${name}:${suffix}"
     echo "${name}.dump"
@@ -266,7 +266,7 @@ do_dump() {
         3>&1 1>&2 2>&3) || return 0
 
     local filename
-    filename=$(make_dump_filename "$prefix" "$suffix" "$PG_HOST" "$PG_DB")
+    filename=$(make_dump_filename "$prefix" "$suffix" "$SELECTED_LABEL")
 
     local tmpfile ret=0
     tmpfile=$(mktemp)
