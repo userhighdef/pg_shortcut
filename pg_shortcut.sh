@@ -568,6 +568,59 @@ do_edit_connection_actions() {
         --msgbox "Allowed actions for '$label':\n$acts_display" 8 60
 }
 
+# ── do_edit_connection_url ─────────────────────────────────────────────────
+do_edit_connection_url() {
+    load_urls
+    if [[ ${#URL_LABELS[@]} -eq 0 ]]; then
+        whiptail --title "No Connections" --msgbox "No saved connections." 6 50
+        return 0
+    fi
+
+    local menu_args=()
+    local i=1
+    for label in "${URL_LABELS[@]}"; do
+        menu_args+=("$i" "$label")
+        (( i++ )) || true
+    done
+
+    local sel
+    sel=$(whiptail \
+        --title "Edit Connection URL" \
+        --menu "Select connection to edit:" 20 70 10 \
+        "${menu_args[@]}" \
+        3>&1 1>&2 2>&3) || return 0
+
+    local idx=$(( sel - 1 ))
+    local label="${URL_LABELS[$idx]}"
+    local old_url="${URL_VALUES[$idx]}"
+    local actions="${URL_ACTIONS[$idx]}"
+
+    local new_url
+    new_url=$(whiptail \
+        --title "Edit Connection URL" \
+        --inputbox "Enter new PostgreSQL connection URL for '$label':\nFormat: postgresql://user:password@host:port/dbname" \
+        10 70 "$old_url" \
+        3>&1 1>&2 2>&3) || return 0
+
+    # Validate scheme
+    if [[ "$new_url" != postgresql://* && "$new_url" != postgres://* ]]; then
+        whiptail --title "Invalid URL" \
+            --msgbox "URL must start with postgresql:// or postgres://" 8 60
+        return 0
+    fi
+
+    # Remove old credentials from ~/.pgpass, then save the new ones
+    parse_url "$old_url"
+    remove_from_pgpass "$PG_HOST" "$PG_PORT" "$PG_DB" "$PG_USER"
+
+    parse_url "$new_url"
+    save_to_pgpass "$PG_HOST" "$PG_PORT" "$PG_DB" "$PG_USER" "$PG_PASS"
+    save_url "$label" "$new_url" "$actions"
+
+    whiptail --title "Updated" \
+        --msgbox "Connection URL for '$label' updated." 8 60
+}
+
 # ── do_delete_connection ───────────────────────────────────────────────────
 do_delete_connection() {
     load_urls
@@ -619,18 +672,20 @@ do_manage_connections() {
         choice=$(whiptail \
             --title "Manage Connections" \
             --backtitle "PostgreSQL Dump & Restore" \
-            --menu "Select operation:" 14 60 4 \
+            --menu "Select operation:" 15 60 5 \
             "1" "Add new connection" \
-            "2" "Edit allowed actions" \
-            "3" "Delete connection" \
-            "4" "Back" \
+            "2" "Edit connection URL" \
+            "3" "Edit allowed actions" \
+            "4" "Delete connection" \
+            "5" "Back" \
             3>&1 1>&2 2>&3) || return 0
 
         case "$choice" in
             1) do_add_url ;;
-            2) do_edit_connection_actions ;;
-            3) do_delete_connection ;;
-            4) return 0 ;;
+            2) do_edit_connection_url ;;
+            3) do_edit_connection_actions ;;
+            4) do_delete_connection ;;
+            5) return 0 ;;
         esac
     done
 }
