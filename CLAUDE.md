@@ -39,6 +39,21 @@ Each saved connection has an `actions` field: a comma-separated subset of `dump`
 
 All `whiptail` calls use `3>&1 1>&2 2>&3` to swap stdout/stderr so the dialog widget goes to the terminal (stderr) and the user's selection comes back on stdout for capture. This pattern is used throughout — don't change it.
 
+### Live log during long operations
+
+`run_logged <title> <logfile> <command...>` runs the command in the background, writing combined output to `<logfile>`, and calls `paint_log_pane` every 0.3s until the command exits. It returns the command's own exit status via `wait` — do not put the command in a pipeline, that loses the status. Ctrl-C kills the child.
+
+**The live pane is drawn by hand, not by `whiptail`.** Two whiptail widgets were tried and both fail on newt 0.52.25:
+
+- `--infobox` exits after each draw and restores the screen, so a repaint loop leaves the terminal blank most of the time.
+- `--gauge` stays open, but newt ignores the text half of the `XXX`/percent/text/`XXX` protocol — the box never updates, and the fed lines leak below it.
+
+So `paint_log_pane` builds one escape-sequence string (background fill, box frame, last N log lines, elapsed seconds) and writes it in a single `printf`. No screen clear, so no flicker. `run_logged` wraps the loop in `tput smcup` / `rmcup` so the pane uses the alternate screen and the menu comes back afterwards. `PANE_BG` / `PANE_BOX` / `PANE_TITLE` match whiptail's default newt palette.
+
+`calc_term_size` sets `TERM_ROWS` / `TERM_COLS` from `stty size </dev/tty`; `calc_box_dims` derives `BOX_H` / `BOX_W` from it so whiptail dialogs fit small terminals. `show_log_file <title> <file>` shows a scrollable `--textbox` of a full log; used for failures, and offered on success.
+
+`do_dump` and `do_restore` pass `-v`, and `do_clean_db` passes `psql -e`, so there is something to show. A successful `pg_restore --clean` prints many `... does not exist, skipping` lines — that is normal, not an error.
+
 ### `awk` for label matching (not `grep`)
 
 `save_url` and `do_delete_connection` use `awk -v lbl="$label" 'BEGIN{FS="\t"} $1 != lbl'` for exact tab-field matching. `grep` BRE was previously used but misinterprets label characters like `[`, `]`, `.` as regex metacharacters. Don't regress this back to `grep`.

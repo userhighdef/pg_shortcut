@@ -34,6 +34,16 @@ SELECTED_URL=""
 SELECTED_LABEL=""
 SELECTED_ACTIONS=""
 PG_HOST="" PG_PORT="" PG_DB="" PG_USER="" PG_PASS=""
+BOX_H=0
+BOX_W=0
+TERM_ROWS=24
+TERM_COLS=80
+
+# whiptail's default newt palette, so the live pane matches the dialogs
+readonly PANE_BG=$'\e[37;44m'
+readonly PANE_BOX=$'\e[30;47m'
+readonly PANE_TITLE=$'\e[1;31;47m'
+readonly PANE_RESET=$'\e[0m'
 
 # ── init_dirs ──────────────────────────────────────────────────────────────
 init_dirs() {
@@ -48,6 +58,130 @@ init_dirs() {
 log_cmd() {
     local status="$1"; shift
     printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$status" "$*" >> "$LOG_FILE"
+}
+
+# ── calc_term_size ─────────────────────────────────────────────────────────
+calc_term_size() {
+    local dims
+    dims=$(stty size </dev/tty 2>/dev/null) || dims="24 80"
+    TERM_ROWS="${dims%% *}"
+    TERM_COLS="${dims##* }"
+    [[ "$TERM_ROWS" =~ ^[0-9]+$ ]] || TERM_ROWS=24
+    [[ "$TERM_COLS" =~ ^[0-9]+$ ]] || TERM_COLS=80
+}
+
+# ── calc_box_dims ──────────────────────────────────────────────────────────
+# Sets BOX_H / BOX_W to a dialog size that fits the current terminal.
+calc_box_dims() {
+    calc_term_size
+    BOX_H=$(( TERM_ROWS - 4 ))
+    if (( BOX_H > 24 )); then BOX_H=24; fi
+    if (( BOX_H < 9 )); then BOX_H=9; fi
+    BOX_W=$(( TERM_COLS - 6 ))
+    if (( BOX_W > 100 )); then BOX_W=100; fi
+    if (( BOX_W < 40 )); then BOX_W=40; fi
+}
+
+# ── paint_log_pane ─────────────────────────────────────────────────────────
+# Usage: paint_log_pane <title> <logfile> <elapsed seconds> <footer hint>
+# Repaints the whole screen in one write, so there is no clear and no flicker.
+paint_log_pane() {
+    local title="$1" logfile="$2" elapsed="$3" hint="$4"
+    calc_term_size
+
+    local box_w=$(( TERM_COLS - 4 )) box_h=$(( TERM_ROWS - 2 ))
+    if (( box_w < 24 )); then box_w=24; fi
+    if (( box_h < 7 )); then box_h=7; fi
+    local top=2 left=3
+    local inner_w=$(( box_w - 4 )) inner_h=$(( box_h - 4 ))
+
+    local lines=() ln
+    while IFS= read -r ln; do lines+=("$ln"); done < <(tail -n "$inner_h" "$logfile" 2>/dev/null | tr -d '\r')
+
+    local blank_row blank_inner
+    printf -v blank_row '%*s' "$TERM_COLS" ''
+    printf -v blank_inner '%*s' "$inner_w" ''
+
+    local out='' r
+    for (( r=1; r<=TERM_ROWS; r++ )); do
+        out+=$'\e['"$r"';1H'"$PANE_BG$blank_row"
+    done
+
+    local caption=" $title  —  ${elapsed}s "
+    local rule_w=$(( box_w - 2 - ${#caption} ))
+    if (( rule_w < 0 )); then rule_w=0; fi
+    local lrule=$(( rule_w / 2 )) rrule
+    rrule=$(( rule_w - lrule ))
+    local bar=''
+    printf -v bar '%*s' "$lrule" ''; bar="${bar// /─}"
+    local bar2=''
+    printf -v bar2 '%*s' "$rrule" ''; bar2="${bar2// /─}"
+    out+=$'\e['"$top"';'"$left"'H'"$PANE_TITLE"'┌'"$bar${caption}$bar2"'┐'
+
+    local i row
+    for (( i=0; i<inner_h; i++ )); do
+        row=$(( top + 1 + i ))
+        ln="${lines[$i]-}"
+        printf -v ln '%-*s' "$inner_w" "${ln:0:inner_w}"
+        out+=$'\e['"$row"';'"$left"'H'"$PANE_BOX"'│ '"$ln"' │'
+    done
+
+    row=$(( top + inner_h + 1 ))
+    out+=$'\e['"$row"';'"$left"'H'"$PANE_BOX"'│ '"$blank_inner"' │'
+
+    local foot=" $hint "
+    rule_w=$(( box_w - 2 - ${#foot} ))
+    if (( rule_w < 0 )); then rule_w=0; fi
+    bar=''
+    printf -v bar '%*s' "$rule_w" ''; bar="${bar// /─}"
+    out+=$'\e['"$(( row + 1 ))"';'"$left"'H'"$PANE_BOX"'└'"${foot}$bar"'┘'
+
+    out+=$'\e['"$TERM_ROWS"';1H'"$PANE_RESET"
+    printf '%s' "$out"
+}
+
+# ── run_logged ─────────────────────────────────────────────────────────────
+# Usage: run_logged <title> <logfile> <command...>
+# Runs the command in the background and streams its output into a full-screen
+# pane until it exits. Returns the command's own exit status.
+#
+# whiptail cannot do this: --infobox exits and restores the screen on every
+# repaint, and newt's --gauge ignores the text half of the XXX protocol
+# (verified on newt 0.52.25 — the box stays but the text never changes).
+run_logged() {
+    local title="$1" logfile="$2"
+    shift 2
+
+    : > "$logfile"
+    # stdin from /dev/null: a hidden password prompt behind the pane looks like a hang
+    "$@" >"$logfile" 2>&1 </dev/null &
+    local pid=$!
+    trap 'kill "$pid" 2>/dev/null || true' INT
+
+    tput smcup 2>/dev/null || true
+    tput civis 2>/dev/null || true
+
+    local start=$SECONDS
+    while kill -0 "$pid" 2>/dev/null; do
+        paint_log_pane "$title" "$logfile" "$(( SECONDS - start ))" "Ctrl-C to abort"
+        sleep 0.3
+    done
+    paint_log_pane "$title" "$logfile" "$(( SECONDS - start ))" "finishing"
+
+    local ret=0
+    wait "$pid" || ret=$?
+    trap - INT
+
+    tput cnorm 2>/dev/null || true
+    tput rmcup 2>/dev/null || true
+    return $ret
+}
+
+# ── show_log_file ──────────────────────────────────────────────────────────
+show_log_file() {
+    local title="$1" file="$2"
+    calc_box_dims
+    whiptail --title "$title" --scrolltext --textbox "$file" "$BOX_H" "$BOX_W"
 }
 
 # ── parse_url ──────────────────────────────────────────────────────────────
@@ -274,28 +408,28 @@ do_dump() {
 
     log_cmd "RUN" "pg_dump -U $PG_USER -h $PG_HOST -p $PG_PORT -d $PG_DB -v -Fc -f $DUMPS_DIR/$filename"
 
-    whiptail --title "Working" --infobox "Running pg_dump, please wait..." 6 50
-
-    pg_dump \
+    run_logged "pg_dump — $SELECTED_LABEL" "$tmpfile" \
+        pg_dump \
         -U "$PG_USER" \
         -h "$PG_HOST" \
         -p "$PG_PORT" \
         -d "$PG_DB" \
         -v \
         -F "c" \
-        -f "$DUMPS_DIR/$filename" \
-        2>"$tmpfile" || ret=$?
+        -f "$DUMPS_DIR/$filename" || ret=$?
 
     if [[ $ret -eq 0 ]]; then
         log_cmd "OK " "pg_dump exit 0 → $DUMPS_DIR/$filename"
-        whiptail --title "Success" \
-            --msgbox "Dump saved to:\n$DUMPS_DIR/$filename" 8 70
+        if whiptail --title "Success" --defaultno \
+            --yes-button "View log" --no-button "Close" \
+            --yesno "Dump saved to:\n$DUMPS_DIR/$filename" 8 70; then
+            show_log_file "pg_dump log" "$tmpfile"
+        fi
     else
         log_cmd "ERR" "pg_dump exit $ret"
-        local display_err
-        display_err=$(head -5 "$tmpfile")
-        whiptail --title "Error" \
-            --msgbox "pg_dump failed (exit $ret):\n\n$display_err" 14 70
+        # a partial .dump would otherwise show up as a restorable file
+        rm -f "$DUMPS_DIR/$filename"
+        show_log_file "pg_dump failed (exit $ret)" "$tmpfile"
     fi
 }
 
@@ -329,30 +463,32 @@ do_restore() {
         --yesno "Restore operation:\n\nDump file:  $selected_dump\nTarget DB:  $target_label ($PG_DB @ $PG_HOST)\n\nThis will DROP and recreate all objects in the target database.\nContinue?" \
         12 74 || return 0
 
-    whiptail --title "Working" --infobox "Restoring database, please wait..." 6 50
+    local tmpfile ret=0
+    tmpfile=$(mktemp)
+    trap 'rm -f "$tmpfile"' RETURN
 
-    local err_output ret
-    log_cmd "RUN" "pg_restore -U $PG_USER -h $PG_HOST -p $PG_PORT -d $PG_DB --clean --if-exists $DUMPS_DIR/$selected_dump"
-    err_output=$(pg_restore \
+    log_cmd "RUN" "pg_restore -U $PG_USER -h $PG_HOST -p $PG_PORT -d $PG_DB -v --clean --if-exists $DUMPS_DIR/$selected_dump"
+    run_logged "pg_restore — $target_label" "$tmpfile" \
+        pg_restore \
         -U "$PG_USER" \
         -h "$PG_HOST" \
         -p "$PG_PORT" \
         -d "$PG_DB" \
+        -v \
         --clean \
         --if-exists \
-        "$DUMPS_DIR/$selected_dump" \
-        2>&1) && ret=0 || ret=$?
+        "$DUMPS_DIR/$selected_dump" || ret=$?
 
     if [[ $ret -eq 0 ]]; then
         log_cmd "OK " "pg_restore exit 0 → $PG_DB @ $PG_HOST"
-        whiptail --title "Success" \
-            --msgbox "Restore completed successfully." 8 50
+        if whiptail --title "Success" --defaultno \
+            --yes-button "View log" --no-button "Close" \
+            --yesno "Restore completed successfully." 8 50; then
+            show_log_file "pg_restore log" "$tmpfile"
+        fi
     else
         log_cmd "ERR" "pg_restore exit $ret"
-        local display_err
-        display_err=$(echo "$err_output" | head -5)
-        whiptail --title "Error" \
-            --msgbox "pg_restore failed (exit $ret):\n\n$display_err" 14 70
+        show_log_file "pg_restore failed (exit $ret)" "$tmpfile"
     fi
 }
 
@@ -366,28 +502,30 @@ do_clean_db() {
         --yesno "WARNING: This will permanently delete ALL objects in:\n\nDatabase:  $PG_DB @ $PG_HOST\n\nDrops and recreates the public schema.\nAll tables, views, sequences, functions, and types will be lost.\n\nThis cannot be undone. Continue?" \
         14 74 || return 0
 
-    whiptail --title "Working" --infobox "Cleaning database, please wait..." 6 50
+    local tmpfile ret=0
+    tmpfile=$(mktemp)
+    trap 'rm -f "$tmpfile"' RETURN
 
-    local err_output ret
-    log_cmd "RUN" "psql -U $PG_USER -h $PG_HOST -p $PG_PORT -d $PG_DB -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'"
-    err_output=$(psql \
+    log_cmd "RUN" "psql -U $PG_USER -h $PG_HOST -p $PG_PORT -d $PG_DB -e -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'"
+    run_logged "clean — $SELECTED_LABEL" "$tmpfile" \
+        psql \
         -U "$PG_USER" \
         -h "$PG_HOST" \
         -p "$PG_PORT" \
         -d "$PG_DB" \
-        -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" \
-        2>&1) && ret=0 || ret=$?
+        -e \
+        -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" || ret=$?
 
     if [[ $ret -eq 0 ]]; then
         log_cmd "OK " "psql clean exit 0 → $PG_DB @ $PG_HOST"
-        whiptail --title "Success" \
-            --msgbox "Database '$PG_DB' cleaned successfully.\nPublic schema dropped and recreated." 8 60
+        if whiptail --title "Success" --defaultno \
+            --yes-button "View log" --no-button "Close" \
+            --yesno "Database '$PG_DB' cleaned successfully.\nPublic schema dropped and recreated." 8 60; then
+            show_log_file "clean log" "$tmpfile"
+        fi
     else
         log_cmd "ERR" "psql clean exit $ret"
-        local display_err
-        display_err=$(echo "$err_output" | head -5)
-        whiptail --title "Error" \
-            --msgbox "Clean failed (exit $ret):\n\n$display_err" 14 70
+        show_log_file "Clean failed (exit $ret)" "$tmpfile"
     fi
 }
 
