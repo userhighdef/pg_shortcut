@@ -690,12 +690,144 @@ do_manage_connections() {
     done
 }
 
+# ── rename_dump_file ───────────────────────────────────────────────────────
+# Args: dump file names (basenames) to choose from.
+rename_dump_file() {
+    local menu_items=() n selected new_name
+    for n in "$@"; do
+        menu_items+=("$n" "")
+    done
+
+    selected=$(whiptail \
+        --title "Rename Dump File" \
+        --menu "Select a dump file:" 20 80 10 \
+        "${menu_items[@]}" \
+        3>&1 1>&2 2>&3) || return 0
+
+    new_name=$(whiptail \
+        --title "Rename File" \
+        --inputbox "Enter new filename:" \
+        8 70 "$selected" \
+        3>&1 1>&2 2>&3) || return 0
+
+    if [[ -z "$new_name" ]]; then
+        whiptail --title "Error" --msgbox "Filename cannot be empty." 6 50
+        return 0
+    fi
+
+    if [[ "$new_name" == "$selected" ]]; then
+        return 0
+    fi
+
+    if [[ -e "$DUMPS_DIR/$new_name" ]]; then
+        whiptail --title "Error" \
+            --msgbox "A file named '$new_name' already exists." 7 60
+        return 0
+    fi
+
+    mv -- "$DUMPS_DIR/$selected" "$DUMPS_DIR/$new_name"
+    log_cmd "OK " "rename $selected → $new_name"
+    whiptail --title "Renamed" \
+        --msgbox "'$selected'\nrenamed to\n'$new_name'" 9 70
+}
+
+# ── delete_dump_files ──────────────────────────────────────────────────────
+# Args: dump file names (basenames) to choose from.
+delete_dump_files() {
+    # Tag cannot clash with a real file: the caller lists only *.dump names
+    local all_tag="ALL"
+    local names=("$@") states=() check_items=() chosen=()
+    local n i sel all list="" ok=0 fail=0 count=0
+
+    for n in "${names[@]}"; do
+        states+=("OFF")
+    done
+
+    while true; do
+        check_items=("$all_tag" "Select all files" "OFF")
+        for ((i = 0; i < ${#names[@]}; i++)); do
+            check_items+=("${names[i]}" "" "${states[i]}")
+        done
+
+        # --separate-output: one filename per line, no quoting — names may hold spaces
+        sel=$(whiptail \
+            --title "Delete Dump Files" \
+            --checklist "Select dump files to delete:\n(Space to toggle, Enter to confirm)" \
+            20 80 10 \
+            "${check_items[@]}" \
+            --separate-output \
+            3>&1 1>&2 2>&3) || return 0
+
+        all=0
+        for ((i = 0; i < ${#names[@]}; i++)); do
+            states[i]="OFF"
+        done
+
+        while IFS= read -r n; do
+            if [[ "$n" == "$all_tag" ]]; then
+                all=1
+            elif [[ -n "$n" ]]; then
+                for ((i = 0; i < ${#names[@]}; i++)); do
+                    if [[ "${names[i]}" == "$n" ]]; then
+                        states[i]="ON"
+                    fi
+                done
+            fi
+        done <<< "$sel"
+
+        # Ticking ALL re-opens the list with every file ticked, so the user can untick some
+        if [[ "$all" -eq 1 ]]; then
+            for ((i = 0; i < ${#names[@]}; i++)); do
+                states[i]="ON"
+            done
+            continue
+        fi
+        break
+    done
+
+    for ((i = 0; i < ${#names[@]}; i++)); do
+        if [[ "${states[i]}" == "ON" ]]; then
+            chosen+=("${names[i]}")
+            count=$((count + 1))
+        fi
+    done
+
+    if [[ "$count" -eq 0 ]]; then
+        whiptail --title "Delete Dump Files" --msgbox "No files selected." 6 50
+        return 0
+    fi
+
+    for n in "${chosen[@]}"; do
+        list+="  $n"$'\n'
+    done
+
+    calc_box_dims
+    whiptail \
+        --title "Confirm Delete" \
+        --scrolltext \
+        --yesno "Delete $count file(s)?\n\n$list\nThis cannot be undone." \
+        "$BOX_H" "$BOX_W" || return 0
+
+    for n in "${chosen[@]}"; do
+        if rm -- "$DUMPS_DIR/$n"; then
+            log_cmd "OK " "delete $n"
+            ok=$((ok + 1))
+        else
+            log_cmd "ERR" "delete $n"
+            fail=$((fail + 1))
+        fi
+    done
+
+    whiptail --title "Deleted" \
+        --msgbox "Deleted: $ok file(s)\nFailed:  $fail file(s)" 8 50
+}
+
 # ── do_manage_dump_files ───────────────────────────────────────────────────
 do_manage_dump_files() {
     while true; do
         local dump_files=()
         while IFS= read -r f; do
-            dump_files+=("$(basename "$f")" "")
+            dump_files+=("$(basename "$f")")
         done < <(find "$DUMPS_DIR" -maxdepth 1 -name "*.dump" 2>/dev/null | sort)
 
         if [[ ${#dump_files[@]} -eq 0 ]]; then
@@ -704,63 +836,19 @@ do_manage_dump_files() {
             return 0
         fi
 
-        local selected
-        selected=$(whiptail \
-            --title "Manage Dump Files" \
-            --menu "Select a dump file:" 20 80 10 \
-            "${dump_files[@]}" \
-            3>&1 1>&2 2>&3) || return 0
-
         local action
         action=$(whiptail \
-            --title "$selected" \
+            --title "Manage Dump Files" \
             --menu "Choose an action:" 12 60 3 \
-            "1" "Rename" \
-            "2" "Delete" \
-            "3" "Cancel" \
-            3>&1 1>&2 2>&3) || continue
+            "1" "Rename a dump file" \
+            "2" "Delete dump files" \
+            "3" "Back" \
+            3>&1 1>&2 2>&3) || return 0
 
         case "$action" in
-            1)
-                local new_name
-                new_name=$(whiptail \
-                    --title "Rename File" \
-                    --inputbox "Enter new filename:" \
-                    8 70 "$selected" \
-                    3>&1 1>&2 2>&3) || continue
-
-                if [[ -z "$new_name" ]]; then
-                    whiptail --title "Error" --msgbox "Filename cannot be empty." 6 50
-                    continue
-                fi
-
-                if [[ "$new_name" == "$selected" ]]; then
-                    continue
-                fi
-
-                if [[ -e "$DUMPS_DIR/$new_name" ]]; then
-                    whiptail --title "Error" \
-                        --msgbox "A file named '$new_name' already exists." 7 60
-                    continue
-                fi
-
-                mv "$DUMPS_DIR/$selected" "$DUMPS_DIR/$new_name"
-                log_cmd "OK " "rename $selected → $new_name"
-                whiptail --title "Renamed" \
-                    --msgbox "'$selected'\nrenamed to\n'$new_name'" 9 70
-                ;;
-            2)
-                whiptail \
-                    --title "Confirm Delete" \
-                    --yesno "Delete '$selected'?\n\nThis cannot be undone." \
-                    8 60 || continue
-
-                rm "$DUMPS_DIR/$selected"
-                log_cmd "OK " "delete $selected"
-                whiptail --title "Deleted" \
-                    --msgbox "'$selected' deleted." 6 60
-                ;;
-            3) continue ;;
+            1) rename_dump_file "${dump_files[@]}" ;;
+            2) delete_dump_files "${dump_files[@]}" ;;
+            3) return 0 ;;
         esac
     done
 }
