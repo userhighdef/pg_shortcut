@@ -25,7 +25,7 @@ No build step. No tests. No package manager.
 | File | Purpose |
 |---|---|
 | `urls` | Tab-separated: `label<TAB>url<TAB>actions` |
-| `dumps/` | `.dump` files produced by `pg_dump -Fc`; named `[prefix:]<connection label, spaces → underscores>:YYYY-MM-DD_HH:MM:SS[:suffix].dump` |
+| `dumps/` | `.dump` files produced by `pg_dump -Fc`. At dump time the user gets one filename box, prefilled with `<connection label, spaces → underscores>:YYYY-MM-DD_HH:MM:SS.dump`, and can edit it. `normalize_dump_filename` trims spaces, rejects an empty name or one with `/`, and adds `.dump` when missing; `do_dump` asks before overwriting an existing file |
 | `pg_shortcut.log` | Timestamped command log |
 | `~/.pgpass` | Written/maintained alongside `urls` |
 

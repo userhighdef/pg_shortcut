@@ -330,13 +330,20 @@ select_url() {
 
 # ── make_dump_filename ─────────────────────────────────────────────────────
 make_dump_filename() {
-    local prefix="$1" suffix="$2" label="$3"
+    local label="$1"
     local ts
     ts=$(date '+%Y-%m-%d_%H:%M:%S')
-    local name="${label// /_}:${ts}"
-    [[ -n "$prefix" ]] && name="${prefix}:${name}"
-    [[ -n "$suffix" ]] && name="${name}:${suffix}"
-    echo "${name}.dump"
+    echo "${label// /_}:${ts}.dump"
+}
+
+# ── normalize_dump_filename ────────────────────────────────────────────────
+normalize_dump_filename() {
+    local name="$1"
+    name="${name#"${name%%[![:space:]]*}"}"
+    name="${name%"${name##*[![:space:]]}"}"
+    [[ -z "$name" || "$name" == */* ]] && return 1
+    [[ "$name" == *.dump ]] || name="${name}.dump"
+    echo "$name"
 }
 
 # ── do_add_url ─────────────────────────────────────────────────────────────
@@ -385,22 +392,34 @@ do_dump() {
     select_url "PG_DUMP — Select Source" "dump" || return 0
     parse_url "$SELECTED_URL"
 
-    local prefix
-    prefix=$(whiptail \
-        --title "Filename Prefix" \
-        --inputbox "Enter optional filename prefix (leave blank for none):" \
-        8 60 "" \
-        3>&1 1>&2 2>&3) || return 0
+    calc_box_dims
+    local prefill filename input
+    prefill=$(make_dump_filename "$SELECTED_LABEL")
 
-    local suffix
-    suffix=$(whiptail \
-        --title "Filename Suffix" \
-        --inputbox "Enter optional filename suffix (leave blank for none):" \
-        8 60 "" \
-        3>&1 1>&2 2>&3) || return 0
+    while :; do
+        input=$(whiptail \
+            --title "Dump Filename" \
+            --inputbox "Filename for this dump:" \
+            10 "$BOX_W" "$prefill" \
+            3>&1 1>&2 2>&3) || return 0
 
-    local filename
-    filename=$(make_dump_filename "$prefix" "$suffix" "$SELECTED_LABEL")
+        if ! filename=$(normalize_dump_filename "$input"); then
+            whiptail --title "Invalid Filename" \
+                --msgbox "Filename cannot be empty or contain '/'." 8 60
+            prefill="$input"
+            continue
+        fi
+
+        if [[ -e "$DUMPS_DIR/$filename" ]]; then
+            # the failure path rm's this file, so an overwrite can lose the old dump
+            if ! whiptail --title "File Exists" --defaultno \
+                --yesno "$filename already exists.\nOverwrite it?" 8 70; then
+                prefill="$filename"
+                continue
+            fi
+        fi
+        break
+    done
 
     local tmpfile ret=0
     tmpfile=$(mktemp)
